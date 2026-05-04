@@ -1,0 +1,63 @@
+# ── Secrets & credentials ─────────────────────────────────────────────────
+.env
+.env.*
+*.key
+secrets.json
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# ── Virtual environments ───────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Large data / input files ───────────────────────────────────────────────
+# Source CSVs — too large for version control; document in README instead
+input/all_mcats_indiamart.csv
+input/taxonomy_tree.csv
+input/related_mcats_overlap.csv
+input/mcat_related_categories.csv
+
+# Input zips
+input/*.zip
+
+# ── Pipeline outputs ───────────────────────────────────────────────────────
+output/
+agent4_input/
+
+# ── Working directories ────────────────────────────────────────────────────
+_work/
+
+# ── Logs & reports ────────────────────────────────────────────────────────
+*.log
+token_usage_report.json
+
+# ── IDEs & editors ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Jupyter ───────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Test & coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
