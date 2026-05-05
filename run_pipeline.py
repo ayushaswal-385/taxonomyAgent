@@ -53,7 +53,7 @@ PREPROCESSOR_CONFIG = {
 }
 
 
-def run_pre_pipeline(mcat_list_path: str) -> bool:
+def run_pre_pipeline(mcat_list_path: str, target_mcat_names: list, zip_overlap_path: str = None, zip_platform_path: str = None) -> bool:
     """Run catalogue_preprocessor.py once across the full mcat_list batch.
 
     Reads PREPROCESSOR_CONFIG paths. Generates one agent4_input.json per MCAT.
@@ -79,14 +79,17 @@ def run_pre_pipeline(mcat_list_path: str) -> bool:
         print("\nProvide these files and rerun. See README for column specifications.")
         return False
 
-    # Optional files
-    overlap_path  = PREPROCESSOR_CONFIG["overlap"]  if os.path.isfile(PREPROCESSOR_CONFIG["overlap"])  else None
-    platform_path = PREPROCESSOR_CONFIG["platform"] if os.path.isfile(PREPROCESSOR_CONFIG["platform"]) else None
+    # Use zip-provided files if available, otherwise fallback to global PREPROCESSOR_CONFIG
+    overlap_path  = zip_overlap_path if zip_overlap_path and os.path.isfile(zip_overlap_path) else PREPROCESSOR_CONFIG["overlap"]
+    overlap_path  = overlap_path if os.path.isfile(overlap_path) else None
+
+    platform_path = zip_platform_path if zip_platform_path and os.path.isfile(zip_platform_path) else PREPROCESSOR_CONFIG["platform"]
+    platform_path = platform_path if os.path.isfile(platform_path) else None
 
     if not overlap_path:
-        print(f"  ⚠ Overlap CSV not found ({PREPROCESSOR_CONFIG['overlap']}) — Tier 2 skipped")
+        print(f"  ⚠ Overlap CSV not found (checked zip and global) — Tier 2 skipped")
     if not platform_path:
-        print(f"  ⚠ Platform CSV not found ({PREPROCESSOR_CONFIG['platform']}) — Tier 3 skipped")
+        print(f"  ⚠ Platform CSV not found (checked zip and global) — Tier 3 skipped")
 
     # Startup: load all source files once
     cp.startup(
@@ -102,14 +105,24 @@ def run_pre_pipeline(mcat_list_path: str) -> bool:
         print(f"ERROR: mcat_list is empty or unreadable: {mcat_list_path}")
         return False
 
+    target_mcat_names_lower = [name.lower() for name in target_mcat_names]
+    target_rows = [
+        row for row in mcat_rows
+        if (row.get("mcat_name", row.get("glcat_mcat_name", ""))).strip().lower() in target_mcat_names_lower
+    ]
+    
+    if not target_rows:
+        print(f"  ⚠ No rows found matching the target zip names, running for all rows as fallback.")
+        target_rows = mcat_rows
+
     output_dir = PREPROCESSOR_CONFIG["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"\n  Processing {len(mcat_rows)} MCATs → {output_dir}/")
+    print(f"\n  Processing {len(target_rows)} required MCATs → {output_dir}/")
     start = time.time()
 
     success = 0
-    for row in mcat_rows:
+    for row in target_rows:
         mcat_id   = str(row.get("mcat_id",   row.get("glcat_mcat_id",   ""))).strip()
         mcat_name =     row.get("mcat_name", row.get("glcat_mcat_name", "")).strip()
         if not mcat_id or not mcat_name:
@@ -130,7 +143,7 @@ def run_pre_pipeline(mcat_list_path: str) -> bool:
             print(f"  ✗ [{mcat_id}] {mcat_name} — preprocessor error: {e}")
 
     elapsed = time.time() - start
-    print(f"\n  Pre-pipeline complete: {success}/{len(mcat_rows)} MCATs in {elapsed:.1f}s")
+    print(f"\n  Pre-pipeline complete: {success}/{len(target_rows)} MCATs in {elapsed:.1f}s")
     return True
 
 
@@ -154,26 +167,7 @@ def main():
 
     total_start = time.time()
 
-    # ── PRE-PIPELINE: Run catalogue_preprocessor once per batch ───────────────
-    # We need a mcat_list to know which MCATs to preprocess.
-    # Extract the first zip to find mcat_list.csv (all zips share it, or it's in input/).
-    first_zip = zips[0]
-    zip_name  = os.path.splitext(os.path.basename(first_zip))[0]
-    work_dir  = os.path.join(PROJECT_ROOT, "_work", zip_name)
-    extract_dir = os.path.join(work_dir, "extracted")
-    os.makedirs(work_dir, exist_ok=True)
-    extract_zip(first_zip, extract_dir)
-    resolved = resolve_files(extract_dir)
-
-    mcat_list_path = resolved.get("mcat_list") or os.path.join(
-        PROJECT_ROOT, "input", "mcat_list.csv"
-    )
-
-    pre_ok = run_pre_pipeline(mcat_list_path)
-    if not pre_ok:
-        print("\nPre-pipeline failed. Cannot continue without agent4_input.json files.")
-        sys.exit(1)
-
+    # (Pre-pipeline is now run per-zip inside the loop below)
     agent4_input_base_dir = PREPROCESSOR_CONFIG["output_dir"]
 
     # ── PER-ZIP PIPELINE ───────────────────────────────────────────────────────
@@ -190,8 +184,8 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(work_dir, exist_ok=True)
 
-        # Extract zip (skip if already extracted from pre-pipeline step)
-        if not os.path.isdir(extract_dir) or zip_idx > 0:
+        # Extract zip
+        if not os.path.isdir(extract_dir):
             print(f"\nExtracting {zip_name}.zip ...")
             extract_zip(zip_path, extract_dir)
 
@@ -206,6 +200,22 @@ def main():
                 print(f"  {key}: ✓ {os.path.basename(path)}")
             else:
                 print(f"  {key}: ✗ not found")
+
+        # ── Run pre-pipeline for this specific zip ────────────────────────────
+        mcat_list_path = files.get("mcat_list") or os.path.join(PROJECT_ROOT, "input", "mcat_list.csv")
+        overlap_path = files.get("overlap")
+        platform_path = files.get("mcat_related")
+
+        pre_ok = run_pre_pipeline(
+            mcat_list_path, 
+            [zip_name], 
+            zip_overlap_path=overlap_path, 
+            zip_platform_path=platform_path
+        )
+        
+        if not pre_ok:
+            print(f"\n  ⚠ Pre-pipeline failed for {zip_name}, skipping this MCAT.")
+            continue
 
         zip_start = time.time()
         tracker = run_pipeline_for_zip(

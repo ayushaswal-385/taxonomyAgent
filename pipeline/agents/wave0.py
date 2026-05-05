@@ -10,12 +10,39 @@ def run_agent_01(client, mcat_name, mcat_id, pdf_paths, work_dir):
     pdf_text = ""
     try:
         import pdfplumber
+        import os
+        import subprocess
+
         for i, path in enumerate(pdf_paths[:5]):
-            with pdfplumber.open(path) as pdf:
+            target_path = path
+            
+            # Compress if PDF is over 50MB
+            if os.path.getsize(path) > 50 * 1024 * 1024:
+                print(f"    [Agent 1] PDF {os.path.basename(path)} is over 50MB. Compressing...")
+                compressed_path = path + ".compressed.pdf"
+                try:
+                    # Use Ghostscript with /screen settings for max compression (suitable for text extraction)
+                    subprocess.run([
+                        "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
+                        "-dPDFSETTINGS=/screen", "-dNOPAUSE", "-dQUIET", "-dBATCH",
+                        f"-sOutputFile={compressed_path}", path
+                    ], check=True, capture_output=True)
+                    
+                    if os.path.exists(compressed_path):
+                        target_path = compressed_path
+                except Exception as comp_e:
+                    print(f"    ⚠ PDF compression failed: {comp_e}. Proceeding with original file.")
+
+            with pdfplumber.open(target_path) as pdf:
                 for page in pdf.pages[:20]:
                     txt = page.extract_text() or ""
                     pdf_text += f"\n--- PDF {i+1} Page {page.page_number} ---\n{txt}"
-            pdf_text = pdf_text[:30000]
+                    
+            # Cleanup temporary compressed file
+            if target_path != path and os.path.exists(target_path):
+                os.remove(target_path)
+                
+        pdf_text = pdf_text[:30000]
     except Exception as e:
         print(f"    ⚠ PDF extraction error: {e}")
         return {"pdf_summary": None}
@@ -77,9 +104,23 @@ def run_agent_02(client, mcat_name, mcat_id, enriched_products):
             "product_page_url": item["product_page_url"],
         })
         if item.get("image_base64") and item["image_status"] == "ok":
+            b64 = item["image_base64"]
+            # Dynamically determine correct mime type from base64 magic bytes
+            # to prevent Anthropic API errors from mismatching mime types.
+            if b64.startswith("/9j/"):
+                mime = "image/jpeg"
+            elif b64.startswith("iVBOR"):
+                mime = "image/png"
+            elif b64.startswith("UklGR"):
+                mime = "image/webp"
+            elif b64.startswith("R0lG"):
+                mime = "image/gif"
+            else:
+                mime = item.get("image_mime_type", "image/jpeg")
+
             images_for_vision.append({
-                "base64": item["image_base64"],
-                "mime_type": item.get("image_mime_type", "image/jpeg"),
+                "base64": b64,
+                "mime_type": mime,
             })
 
     system = f"""You are Agent 2 — Product & Image Verifier for MCAT "{mcat_name}".

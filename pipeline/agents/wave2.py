@@ -97,8 +97,12 @@ Test: "Is the parent MCAT name just a longer/more formal way of saying the same 
 === SEGMENT ISOLATION RULE ===
 When Agent 3 flags needs_cleaning: yes:
   Identify candidates belonging to the contaminating segment → relationship: unrelated
+  OMIT all unrelated candidates from your output entirely (do NOT include them in related_mcats or slim_output).
 
 === OUTPUT ===
+IMPORTANT: Candidates classified as relationship="unrelated" must be EXCLUDED from both
+related_mcats and slim_output. Do NOT include them in the JSON at all.
+
 RESPOND WITH ONLY VALID JSON:
 {{
   "related_mcats": [
@@ -188,18 +192,38 @@ RESPOND WITH ONLY VALID JSON:
 {fcp_text}
 
 Instructions:
-1. Classify EVERY candidate in the pool above. All must appear in related_mcats.
-2. Set slim_output as a condensed copy (one entry per related_mcat) for Agent 12 and Agent 14.
-3. Where overlap_data is null on a candidate: set all overlap fields to 0 in your output.
-4. Set page_browse_performed: false and page_browse_check: null for all candidates."""
+1. Classify EVERY candidate in the pool above.
+2. EXCLUDE any candidate whose final relationship is "unrelated" — do NOT add it to related_mcats or slim_output.
+3. Set slim_output as a condensed copy (one entry per non-unrelated related_mcat) for Agent 12 and Agent 14.
+4. Where overlap_data is null on a candidate: set all overlap fields to 0 in your output.
+5. Set page_browse_performed: false and page_browse_check: null for all candidates."""
 
-    result = client.call("Agent_04_Mapper", mcat_name, system, user, max_tokens=30000)
+    result = client.call("Agent_04_Mapper", mcat_name, system, user, max_tokens=120000)
     content = result.get("content", {})
     if isinstance(content, str):
         try:
             content = json.loads(content)
         except (json.JSONDecodeError, ValueError):
             content = {}
+
+    # ── Post-process: strip any unrelated entries that slipped through ────────
+    if isinstance(content, dict):
+        related = content.get("related_mcats", [])
+        if isinstance(related, list):
+            filtered = [m for m in related if m.get("relationship") != "unrelated"]
+            dropped = len(related) - len(filtered)
+            if dropped:
+                print(f"    [Agent4] Stripped {dropped} unrelated candidate(s) from related_mcats.")
+            content["related_mcats"] = filtered
+
+        slim = content.get("slim_output", [])
+        if isinstance(slim, list):
+            filtered_slim = [m for m in slim if m.get("relationship") != "unrelated"]
+            dropped_slim = len(slim) - len(filtered_slim)
+            if dropped_slim:
+                print(f"    [Agent4] Stripped {dropped_slim} unrelated candidate(s) from slim_output.")
+            content["slim_output"] = filtered_slim
+
     return content
 
 

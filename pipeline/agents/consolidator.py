@@ -68,9 +68,11 @@ def run_consolidator(mcat_name, mcat_id, mcat_url, all_outputs):
     sv = dict(a14) if a14 else {}
     sv["thumbnail_audit"] = a5.get("thumbnail_audit", {"current_thumbnail_correct": True, "reason": []})
 
-    # ── related_mcats_summary (lean index) ──
+    # ── related_mcats_summary (lean index) — unrelated excluded ──
     related_summary = []
     for rm in a4.get("related_mcats", a4.get("slim_output", [])):
+        if rm.get("relationship") == "unrelated":
+            continue
         related_summary.append({
             "mcat_name": rm.get("mcat_name", ""),
             "relationship": rm.get("relationship", "unknown"),
@@ -121,7 +123,8 @@ def run_consolidator(mcat_name, mcat_id, mcat_url, all_outputs):
         "pipeline_version": "v5.9",
         "page_url": mcat_url or "",
         "file_purpose": "Taxonomy governance — related MCAT classification, overlap data, and merge analysis.",
-        "related_mcats": a4.get("related_mcats", []),
+        "related_mcats": [m for m in a4.get("related_mcats", [])
+                          if m.get("relationship") != "unrelated"],
         "merge_summary": {
             "absorb_others_into_this": sv.get("absorb_others_into_this", "no"),
             "mcats_to_absorb": sv.get("mcats_to_absorb", []),
