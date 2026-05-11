@@ -42,6 +42,30 @@ def _image_to_base64(image_path: str) -> tuple:
     return base64.b64encode(data).decode("utf-8"), mime_type
 
 
+def load_image_for_vision(image_path: Optional[str]) -> Optional[Dict[str, str]]:
+    """Load a single local image file for multimodal LLM input."""
+    if not image_path or not os.path.isfile(image_path):
+        return None
+
+    b64, mime = _image_to_base64(image_path)
+
+    # Normalize MIME from base64 signature to avoid upstream mismatches.
+    if b64.startswith("/9j/"):
+        mime = "image/jpeg"
+    elif b64.startswith("iVBOR"):
+        mime = "image/png"
+    elif b64.startswith("UklGR"):
+        mime = "image/webp"
+    elif b64.startswith("R0lG"):
+        mime = "image/gif"
+
+    return {
+        "base64": b64,
+        "mime_type": mime,
+        "image_path": image_path,
+    }
+
+
 def _unzip_images(zip_path: str, extract_to: str) -> str:
     """Unzip image archive to a temporary directory."""
     if not zip_path or not os.path.exists(zip_path):

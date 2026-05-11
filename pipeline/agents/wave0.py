@@ -1,5 +1,89 @@
 """Agents for Wave 0: Agent 1 (PDF Enricher) and Agent 2 (Product Verifier)."""
+import base64
+import io
 import json
+from PIL import Image, ImageOps
+
+
+AGENT2_IMAGE_MAX_BYTES = int(4.8 * 1024 * 1024)
+
+
+def _normalize_agent2_mime(b64: str, fallback: str = "image/jpeg") -> str:
+    """Infer MIME from base64 signature to avoid upstream mismatches."""
+    if b64.startswith("/9j/"):
+        return "image/jpeg"
+    if b64.startswith("iVBOR"):
+        return "image/png"
+    if b64.startswith("UklGR"):
+        return "image/webp"
+    if b64.startswith("R0lG"):
+        return "image/gif"
+    return fallback
+
+
+def _compress_agent2_image_if_needed(item: dict) -> dict | None:
+    """Shrink oversized images for Agent 2 so Anthropic accepts them."""
+    b64 = item.get("image_base64")
+    if not b64:
+        return None
+
+    mime = _normalize_agent2_mime(b64, item.get("image_mime_type", "image/jpeg"))
+
+    try:
+        raw = base64.b64decode(b64)
+    except Exception as e:
+        print(f"    ⚠ [Agent 2] Failed to decode image for item {item.get('item_id')}: {e}")
+        return None
+
+    if len(raw) <= AGENT2_IMAGE_MAX_BYTES:
+        return {"base64": b64, "mime_type": mime}
+
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img = ImageOps.exif_transpose(img)
+        if img.mode in ("RGBA", "LA", "P"):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            rgba = img.convert("RGBA")
+            alpha = rgba.getchannel("A")
+            background.paste(rgba, mask=alpha)
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        best_bytes = None
+        max_dims = [None, 2400, 2000, 1600, 1280, 1024, 768]
+        qualities = [85, 75, 65, 55, 45, 35]
+
+        for max_dim in max_dims:
+            working = img.copy()
+            if max_dim and max(working.size) > max_dim:
+                working.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
+            for quality in qualities:
+                buf = io.BytesIO()
+                working.save(buf, format="JPEG", quality=quality, optimize=True)
+                candidate = buf.getvalue()
+                if best_bytes is None or len(candidate) < len(best_bytes):
+                    best_bytes = candidate
+                if len(candidate) <= AGENT2_IMAGE_MAX_BYTES:
+                    print(
+                        f"    [Agent 2] Compressed oversized image for item {item.get('item_id')} "
+                        f"from {len(raw):,} to {len(candidate):,} bytes."
+                    )
+                    return {
+                        "base64": base64.b64encode(candidate).decode("utf-8"),
+                        "mime_type": "image/jpeg",
+                    }
+
+        if best_bytes is not None:
+            print(
+                f"    ⚠ [Agent 2] Could not compress item {item.get('item_id')} below "
+                f"{AGENT2_IMAGE_MAX_BYTES:,} bytes; best={len(best_bytes):,}. Skipping image."
+            )
+    except Exception as e:
+        print(f"    ⚠ [Agent 2] Compression failed for item {item.get('item_id')}: {e}")
+
+    return None
 
 def run_agent_01(client, mcat_name, mcat_id, pdf_paths, work_dir):
     """Agent 1 — PDF Enricher. Returns pdf_summary dict."""
@@ -104,24 +188,9 @@ def run_agent_02(client, mcat_name, mcat_id, enriched_products):
             "product_page_url": item["product_page_url"],
         })
         if item.get("image_base64") and item["image_status"] == "ok":
-            b64 = item["image_base64"]
-            # Dynamically determine correct mime type from base64 magic bytes
-            # to prevent Anthropic API errors from mismatching mime types.
-            if b64.startswith("/9j/"):
-                mime = "image/jpeg"
-            elif b64.startswith("iVBOR"):
-                mime = "image/png"
-            elif b64.startswith("UklGR"):
-                mime = "image/webp"
-            elif b64.startswith("R0lG"):
-                mime = "image/gif"
-            else:
-                mime = item.get("image_mime_type", "image/jpeg")
-
-            images_for_vision.append({
-                "base64": b64,
-                "mime_type": mime,
-            })
+            prepared = _compress_agent2_image_if_needed(item)
+            if prepared:
+                images_for_vision.append(prepared)
 
     system = f"""You are Agent 2 — Product & Image Verifier for MCAT "{mcat_name}".
 Role: Verify AI-deemed good and bad product classifications by inspecting images and product page info.

@@ -13,11 +13,9 @@ from typing import Optional, Dict, List
 # ── Pattern groups for fuzzy matching ─────────────────────────────────────
 FILE_PATTERNS = {
     "mcat_list": [r"mcat_list\.csv"],
-    "all_mcats": [r"all_mcats[_\-]?indiamart\.csv", r"all_mcats\.csv"],
+    "agent4_input": [r"agent4_input\.json"],
     "google_keywords": [r"google[_\-]?search[_\-]?keywords\.csv", r"google[_\-]?keywords\.csv"],
     "internal_keywords": [r"internal[_\-]?search[_\-]?keywords\.csv", r"internal[_\-]?keywords\.csv"],
-    "mcat_related": [r"mcat[_\-]?related[_\-]?categories\.csv", r"related[_\-]?categories\.csv"],
-    "overlap": [r"related[_\-]?mcats[_\-]?overlap\.csv", r"overlap\.csv"],
     "good_products": [r"good[_\-]?products\.csv"],
     "bad_products": [r"bad[_\-]?products\.csv"],
     "good_images": [r"good[_\-]?(product[_\-]?)?images\.zip"],

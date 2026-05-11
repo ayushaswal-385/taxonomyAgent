@@ -231,7 +231,7 @@ Instructions:
 # AGENT 5 — Name + Image Audit
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_agent_05(client, mcat_name, mcat_id, vision_output, thumbnail_url):
+def run_agent_05(client, mcat_name, mcat_id, vision_output, thumbnail_url, thumbnail_image=None):
     """Agent 5 — Name + Image Audit."""
     system = f"""You are Agent 5 — Name + Image Audit for "{mcat_name}".
 Evaluate the current MCAT name and thumbnail. Produce 3 AI thumbnail image descriptions.
@@ -240,6 +240,9 @@ Name Audit: Cross-reference name against keywords, Amazon, Google Shopping.
 Thumbnail Audit: current_thumbnail_correct: false ONLY if wrong product shown, brochure instead of product, no product visible, or seller watermark obstruction.
 
 When listing_quality.needs_cleaning=yes, ALL 3 thumbnail suggestions MUST represent primary_segment ONLY.
+
+If a thumbnail image is attached, inspect that image directly for the thumbnail audit.
+Treat the attached thumbnail image as the primary source of truth over any URL text.
 
 RESPOND WITH ONLY VALID JSON:
 {{"mcat_name_audit":{{"verdict":"correct|needs_improvement|incorrect","reason":"","suggested_name":null}},
@@ -252,8 +255,21 @@ RESPOND WITH ONLY VALID JSON:
                                 "top_internal_keywords", "top_google_keywords",
                                 "market_context", "thumbnail_image_description"]},
                      indent=1) if vision_output else "{}"
-    user = f"MCAT: {mcat_name}\nThumbnail URL: {thumbnail_url}\n\nAgent 3 Context:\n{vis}"
-    result = client.call("Agent_05_NameImage", mcat_name, system, user, max_tokens=4000)
+    user = (
+        f"MCAT: {mcat_name}\n"
+        f"Thumbnail URL: {thumbnail_url or 'Not provided'}\n"
+        f"Attached thumbnail image from zip: {'yes' if thumbnail_image else 'no'}\n\n"
+        f"Agent 3 Context:\n{vis}\n\n"
+        f"Use the attached thumbnail image for thumbnail_audit when available."
+    )
+    result = client.call(
+        "Agent_05_NameImage",
+        mcat_name,
+        system,
+        user,
+        max_tokens=4000,
+        images=[thumbnail_image] if thumbnail_image else None,
+    )
     return result.get("content", {})
 
 

@@ -4,7 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pipeline.config import MAX_PARALLEL_AGENTS
 from pipeline.file_resolver import read_csv_safe, get_mcat_slug
-from pipeline.image_preloader import preload_images
+from pipeline.image_preloader import preload_images, load_image_for_vision
 from pipeline.llm_client import LLMClient
 from pipeline.token_tracker import TokenTracker
 from pipeline.agents.wave0 import run_agent_01, run_agent_02
@@ -17,27 +17,24 @@ from pipeline.agents.consolidator import run_consolidator
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HELPER — load agent4_input.json for a single MCAT
+# HELPER — load agent4_input.json from the extracted zip
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_agent4_input(agent4_input_base_dir: str, mcat_id: str) -> dict:
-    """Load the pre-built agent4_input.json for this MCAT.
+def load_agent4_input(agent4_input_path: str | None) -> dict:
+    """Load agent4_input.json from the current extracted zip.
 
-    Path convention: {agent4_input_base_dir}/{mcat_id}/agent4_input.json
     Returns an empty dict with a warning if the file is missing.
     """
-    path = os.path.join(agent4_input_base_dir, str(mcat_id), "agent4_input.json")
-    if not os.path.isfile(path):
-        print(f"    ⚠ agent4_input.json not found for MCAT {mcat_id} at {path}")
-        print(f"      Run catalogue_preprocessor.py first (see README).")
+    if not agent4_input_path or not os.path.isfile(agent4_input_path):
+        print(f"    ⚠ agent4_input.json not found in extracted zip: {agent4_input_path}")
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(agent4_input_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         print(f"    ✓ agent4_input.json loaded — {data.get('candidate_summary', {}).get('total', '?')} candidates")
         return data
     except (json.JSONDecodeError, OSError) as e:
-        print(f"    ✗ Failed to load agent4_input.json for MCAT {mcat_id}: {e}")
+        print(f"    ✗ Failed to load agent4_input.json at {agent4_input_path}: {e}")
         return {}
 
 
@@ -45,16 +42,15 @@ def load_agent4_input(agent4_input_base_dir: str, mcat_id: str) -> dict:
 # PER-MCAT PROCESSOR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def process_single_mcat(mcat_row, files, agent4_input_base_dir,
+def process_single_mcat(mcat_row, files,
                          google_kws_all, internal_kws_all,
                          call_data_all, client, tracker, output_dir, work_dir):
     """Process one MCAT through all waves.
 
     Changes vs v6:
-    - Loads agent4_input.json (pre-built by catalogue_preprocessor.py) for this MCAT.
+    - Loads agent4_input.json directly from the extracted zip for this MCAT.
     - Passes taxonomy_context from agent4_input.json to Agent 3.
     - Agent 4 receives agent4_input dict — NO raw CSVs.
-    - pipeline/preprocessor.py is no longer called inside the per-MCAT loop.
     """
     mcat_name = mcat_row.get("glcat_mcat_name", mcat_row.get("mcat_name", "")).strip()
     mcat_id   = mcat_row.get("glcat_mcat_id",   mcat_row.get("mcat_id", "")).strip()
@@ -80,7 +76,7 @@ def process_single_mcat(mcat_row, files, agent4_input_base_dir,
 
     # ── PRE-WAVE: Load agent4_input.json ──────────────────────────────────────
     print("  Pre-Wave: Loading agent4_input.json ...")
-    agent4_input = load_agent4_input(agent4_input_base_dir, mcat_id)
+    agent4_input = load_agent4_input(files.get("agent4_input"))
     taxonomy_context = agent4_input.get("taxonomy_context", {})
     if taxonomy_context:
         print(f"    ✓ taxonomy_context loaded — full_path: {taxonomy_context.get('full_path', 'N/A')}")
@@ -95,6 +91,11 @@ def process_single_mcat(mcat_row, files, agent4_input_base_dir,
         mcat_id, mcat_work
     )
     print(f"    → {len(enriched_products)} products with images loaded")
+    thumbnail_image = load_image_for_vision(files.get("thumbnail"))
+    if thumbnail_image:
+        print(f"    → Thumbnail image loaded from zip: {os.path.basename(files['thumbnail'])}")
+    else:
+        print("    → No thumbnail image loaded from zip")
 
     all_outputs = {}
 
@@ -124,7 +125,7 @@ def process_single_mcat(mcat_row, files, agent4_input_base_dir,
             client, mcat_name, mcat_id, vision_output, agent4_input
         ),
         "agent5": lambda: run_agent_05(
-            client, mcat_name, mcat_id, vision_output, thumbnail_url
+            client, mcat_name, mcat_id, vision_output, thumbnail_url, thumbnail_image
         ),
         "agent6": lambda: run_agent_06(client, mcat_name, vision_output),
         "agent7": lambda: run_agent_07(client, mcat_name, vision_output, all_outputs["agent2"]),
@@ -194,16 +195,11 @@ def process_single_mcat(mcat_row, files, agent4_input_base_dir,
 # ZIP-LEVEL RUNNER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_pipeline_for_zip(zip_name, files, output_dir, work_dir,
-                          agent4_input_base_dir: str = "agent4_input"):
-    """Run the full pipeline for one extracted zip (one MCAT family).
-
-    agent4_input_base_dir: directory containing pre-built {mcat_id}/agent4_input.json files.
-    Default: 'agent4_input/' relative to project root.
-    catalogue_preprocessor.py must have been run before this is called.
-    """
+def run_pipeline_for_zip(zip_name, files, output_dir, work_dir):
+    """Run the full pipeline for one extracted zip (one MCAT family)."""
     tracker = TokenTracker()
     client = LLMClient(tracker)
+    agent4_input_meta = load_agent4_input(files.get("agent4_input"))
 
     # Load shared data
     mcat_list_rows = read_csv_safe(files.get("mcat_list"))
@@ -221,17 +217,40 @@ def run_pipeline_for_zip(zip_name, files, output_dir, work_dir,
     print(f"  internal_kws: {len(internal_kws_all)} rows")
     print(f"  call_data: {len(call_data_all)} rows")
     print(f"  seller_pdfs: {len(files.get('seller_pdfs', []))} files")
-    print(f"  agent4_input dir: {os.path.abspath(agent4_input_base_dir)}")
+    if files.get("agent4_input"):
+        print(f"  agent4_input: {os.path.abspath(files['agent4_input'])}")
+    else:
+        print("  agent4_input: ✗ not found")
 
     if google_kws_all:
         print(f"  google_kws columns: {list(google_kws_all[0].keys())}")
     if internal_kws_all:
         print(f"  internal_kws columns: {list(internal_kws_all[0].keys())}")
 
-    # Filter to only process the MCAT matching the zip name
-    target_rows = [r for r in mcat_list_rows
-                   if (r.get("glcat_mcat_name", r.get("mcat_name", ""))
-                       .strip().lower() == zip_name.lower())]
+    root_mcat_id = str(agent4_input_meta.get("root_mcat_id", "")).strip()
+    root_mcat_name = str(agent4_input_meta.get("root_mcat_name", "")).strip().lower()
+
+    # Filter to the MCAT identified by the in-zip agent4_input.json when possible.
+    target_rows = []
+    if root_mcat_id or root_mcat_name:
+        target_rows = [
+            r for r in mcat_list_rows
+            if (
+                root_mcat_id
+                and str(r.get("glcat_mcat_id", r.get("mcat_id", ""))).strip() == root_mcat_id
+            ) or (
+                root_mcat_name
+                and (r.get("glcat_mcat_name", r.get("mcat_name", ""))).strip().lower() == root_mcat_name
+            )
+        ]
+        if target_rows:
+            print("  Target MCAT resolved from agent4_input.json")
+
+    # Fallback to zip-name matching if agent4_input.json lacks usable root metadata.
+    if not target_rows:
+        target_rows = [r for r in mcat_list_rows
+                       if (r.get("glcat_mcat_name", r.get("mcat_name", ""))
+                           .strip().lower() == zip_name.lower())]
     if not target_rows:
         print(f"  WARNING: No MCAT matched zip name '{zip_name}'. Processing all {len(mcat_list_rows)}.")
         target_rows = mcat_list_rows
@@ -250,7 +269,7 @@ def run_pipeline_for_zip(zip_name, files, output_dir, work_dir,
 
         try:
             process_single_mcat(
-                mcat_row, files, agent4_input_base_dir,
+                mcat_row, files,
                 google_kws_all, internal_kws_all,
                 call_data_all, client, tracker, output_dir, work_dir,
             )
